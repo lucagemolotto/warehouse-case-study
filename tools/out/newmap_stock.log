@@ -1,0 +1,17 @@
+Exception in thread Thread-4 (drive):
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/threading.py", line 1073, in _bootstrap_inner
+    self.run()
+  File "/usr/lib/python3.12/threading.py", line 1010, in run
+    self._target(*self._args, **self._kwargs)
+  File "/tools/eval_amcl.py", line 100, in drive
+    gh = ac.send_goal_async(g)
+         ^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/ros/jazzy/lib/python3.12/site-packages/rclpy/action/client.py", line 451, in send_goal_async
+    sequence_number = self._client_handle.send_goal_request(request)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: Object of type 'NoneType' is not an instance of 'capsule'
+robot1: 281 samples | xy mean 0.557 p95 1.944 max 8.124 m | yaw mean 8.5 max 139.5 deg | H:ok(49s) P1:ok(45s) D1:ok(57s) P4:ABORTED(57s) D4:ok(17s) H:ABORTED(25s)
+robot2: 169 samples | xy mean 7.409 p95 16.692 max 17.050 m | yaw mean 41.9 max 122.8 deg | H:ok(2s) P3:ok(43s) D2:ABORTED(103s) P5:ABORTED(22s) D3:ABORTED(19s) H:ABORTED(20s)
+robot3: no AMCL samples | 
+ALL: xy mean 3.130 p95 15.084 max 17.050 m

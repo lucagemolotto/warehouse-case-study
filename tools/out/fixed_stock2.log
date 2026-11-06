@@ -1,0 +1,4 @@
+robot1: 219 samples | xy mean 0.109 p95 0.213 max 0.250 m | yaw mean 1.7 max 21.5 deg | odom err max 6.752 m | P1:ok(45s) D1:ok(53s) P4:ok(64s) D4:ok(29s) H:ok(29s)
+robot2: 250 samples | xy mean 0.100 p95 0.224 max 0.501 m | yaw mean 1.9 max 35.0 deg | odom err max 8.364 m | P3:ok(42s) D2:ok(59s) P5:ok(65s) D3:ok(43s) H:ok(43s)
+robot3: 219 samples | xy mean 0.135 p95 0.257 max 0.684 m | yaw mean 2.5 max 42.6 deg | odom err max 11.006 m | P5:ok(49s) D3:ok(44s) P2:ok(17s) D2:ok(55s) H:ok(57s)
+ALL: xy mean 0.114 p95 0.227 max 0.684 m

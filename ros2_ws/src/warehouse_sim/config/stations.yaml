@@ -1,0 +1,15 @@
+# Named stations in the map frame. Tasks go from a pick station to a drop
+# station. Pick stations sit in the shelf aisles (x = 3.75, midway between
+# shelf rows); drop stations in the open areas; home is the loading zone
+# where robots spawn. Clearances checked against maps/warehouse.yaml.
+stations:
+  - {name: P1, kind: pick, x: 3.75, y: -0.33}
+  - {name: P2, kind: pick, x: 3.75, y: -2.14}
+  - {name: P3, kind: pick, x: 3.75, y: -3.94}
+  - {name: P4, kind: pick, x: 3.75, y: -5.79}
+  - {name: P5, kind: pick, x: 3.75, y: -7.71}
+  - {name: D1, kind: drop, x: -4.00, y: 7.00}
+  - {name: D2, kind: drop, x: -5.00, y: 5.50}
+  - {name: D3, kind: drop, x: 0.50, y: 0.50}
+  - {name: D4, kind: drop, x: -1.00, y: -3.00}
+  - {name: H,  kind: home, x: -4.75, y: -7.50}

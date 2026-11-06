@@ -1,0 +1,10 @@
+# Spawn poses in the map frame (= Gazebo world frame). AMCL starts from the
+# same pose. The first `n_robots` entries are used.
+# Loading zone, bottom-left of the map, robots 1 m apart facing +x.
+robots:
+  - {name: robot1, x: -5.5, y: -6.5, yaw: 0.0}
+  - {name: robot2, x: -5.5, y: -7.5, yaw: 0.0}
+  - {name: robot3, x: -5.5, y: -8.5, yaw: 0.0}
+  - {name: robot4, x: -4.0, y: -6.5, yaw: 0.0}
+  - {name: robot5, x: -4.0, y: -7.5, yaw: 0.0}
+  - {name: robot6, x: -4.0, y: -8.5, yaw: 0.0}

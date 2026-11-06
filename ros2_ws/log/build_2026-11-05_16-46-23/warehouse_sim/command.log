@@ -1,0 +1,4 @@
+Invoking command in '/ws/build/warehouse_sim': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/jazzy /usr/bin/cmake --build /ws/build/warehouse_sim -- -j28 -l28
+Invoked command in '/ws/build/warehouse_sim' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/jazzy /usr/bin/cmake --build /ws/build/warehouse_sim -- -j28 -l28
+Invoking command in '/ws/build/warehouse_sim': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/jazzy /usr/bin/cmake --install /ws/build/warehouse_sim
+Invoked command in '/ws/build/warehouse_sim' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/jazzy /usr/bin/cmake --install /ws/build/warehouse_sim

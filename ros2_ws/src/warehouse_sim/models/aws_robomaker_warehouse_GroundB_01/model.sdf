@@ -1,0 +1,39 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <model name="aws_robomaker_warehouse_GroundB_01">
+    <link name="link">
+      <inertial>
+        <mass>1000</mass>
+      </inertial>
+      <collision name="collision">
+        <!-- Was the 8-vertex box mesh *_collision.DAE (13.98 x 20.91 x 0.124 m,
+             base at z=0) with anisotropic friction mu=100/mu2=50. As a mesh under
+             dartsim it made the TurtleBot3 wheels slip; same box as a primitive,
+             isotropic friction. -->
+        <pose>0 0 0.06216 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>13.98047 20.90666 0.12432</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="visual">
+	    <geometry>
+          <mesh>
+            <uri>model://aws_robomaker_warehouse_GroundB_01/meshes/aws_robomaker_warehouse_GroundB_01_visual.DAE</uri>
+          </mesh>
+        </geometry>
+      <meta> <layer> 1 </layer></meta>
+</visual>
+    </link>
+<static>1</static>
+  </model>
+</sdf>

@@ -1,0 +1,8 @@
+image: warehouse.png
+resolution: 0.050000
+origin: [-6.9000, -10.3625, 0.000000]  # AWS map 005 is (-7.0, -10.5); shifted to match the gz world (lidar fit, 2026-11-04)
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.196
+
+# -3.071 3.583

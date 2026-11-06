@@ -1,0 +1,47 @@
+# Simulation stack (step 1). From warehouse_rabu/:
+#   docker compose -f docker/compose.yaml run --rm build     # colcon build ros2_ws
+#   N_ROBOTS=3 docker compose -f docker/compose.yaml up sim
+#   GUI=True docker compose -f docker/compose.yaml up sim   # Gazebo window on the host display
+# Host networking + a fixed ROS_DOMAIN_ID, so the Humble agent containers
+# (step 3) see the same DDS graph.
+x-sim: &sim
+  image: warehouse-sim:jazzy
+  build: {context: .., dockerfile: docker/sim.Dockerfile}
+  network_mode: host
+  ipc: host
+  environment:
+    ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}
+  volumes:
+    - ../ros2_ws:/ws
+
+services:
+  build:
+    <<: *sim
+    user: "${UID:-1000}:${GID:-1000}"
+    environment: {HOME: /tmp}
+    command: colcon build --symlink-install
+    profiles: [tools]
+
+  sim:
+    <<: *sim
+    container_name: wh_sim
+    # NVIDIA GPU for Gazebo rendering (lidar + GUI); needs nvidia-container-toolkit.
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}
+      NVIDIA_DRIVER_CAPABILITIES: all
+      # Use NVIDIA's EGL directly, otherwise the headless server's sensor
+      # rendering falls back to Mesa (software) after failed DRI probes.
+      __EGL_VENDOR_LIBRARY_FILENAMES: /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+      # Host display (X11 / XWayland) for gui:=True.
+      DISPLAY: ${DISPLAY:-:0}
+      XAUTHORITY: /tmp/.xauth
+      QT_QPA_PLATFORM: xcb
+    volumes:
+      - ../ros2_ws:/ws
+      - /tmp/.X11-unix:/tmp/.X11-unix:ro
+      - ${XAUTHORITY:-/dev/null}:/tmp/.xauth:ro
+    command: ros2 launch warehouse_sim warehouse_multi.launch.py n_robots:=${N_ROBOTS:-3} gui:=${GUI:-False}

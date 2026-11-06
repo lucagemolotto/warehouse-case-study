@@ -1,0 +1,392 @@
+# DRAFT — warehouse case study: task assignment by repeated leader election
+# (Audrito et al., ISoLA 2026, Alg. 1) plus ATC-style route reservation.
+#
+# Format: the abusim/abumon scenario format, extended so that one rule holds
+# several tasks (`tasks:`; condtype 0 = `for`, local; 1 = `for all`, remote).
+# The rule grammar already allows this (prule: RULE name ON events task+);
+# the YAML loader does not yet (step 4).
+#
+# Nodes: robot1..3 (vehicles.Nav2Robot) and one dispatcher (basic node).
+# Built-in robot attributes (rosresources.Nav2RobotResources), not declared here:
+#   inputs  pose_x, pose_y, pose_yaw, nav_status, battery, fault, round
+#   outputs goal_x, goal_y, goal_yaw, goal_seq, cancel_seq
+# Builtins: ZoneOf(x, y), ZoneRoute(x0, y0, x1, y1) (zone bitmasks, package zones).
+#
+# Layers, bottom-up (each rule set below):
+#   traffic   — move(dest): reserve a route, drive, release. The only layer
+#               that sends goals. Upper layers just set dest_x/dest_y and
+#               increment move_req, and watch `arrivals`.
+#   task      — per robot: phases of the task it executes (to_from, loading,
+#               to_to, unloading), going home, yielding, crashing.
+#   slot_1    — per task slot k (slot 1 shown; slots 2..K are the same rules
+#               with t1_ -> tK_ and 1 -> K): cost, election, take-over.
+#   dispatch  — dispatcher node: puts a new task in a free slot, broadcasts it.
+#
+# Rounds: `round` = floor(sim time / 1 s), the same on every robot.
+
+nodes:
+  - id: robot1
+    type: nav2robot
+    ruleSets: [traffic, task, slot_1, slot_2, slot_3]
+    memory: &robot
+      agentId: 1
+      is_robot: true
+      home_x: -5.5          # parking spot = spawn pose (config/robots.yaml)
+      home_y: -6.5
+      # --- parameters ---
+      THETA: 3              # rounds as best bidder before taking a task
+      DWELL: 3              # rounds to load / unload a crate
+      GRANT_WAIT: 2         # rounds without a deny before a route is granted
+      RETRY: 10             # rounds before a denied robot asks again anyway
+      HYST: 0.8             # cost factor for the robot already on the task (omega)
+      COST_INF: 1.0e9       # crashed, or busy on another task
+      COST_CARRY: -1.0e9    # carrying the task's crate: never pre-empted
+      # --- task layer ---
+      state: "idle"         # idle | busy | crashed
+      busy_task: 0          # slot of the task being executed, 0 = none
+      phase: "none"         # none | to_from | loading | to_to | unloading
+      cur_fx: 0.0           # copy of the task being executed (L_from, L_to)
+      cur_fy: 0.0
+      cur_tx: 0.0
+      cur_ty: 0.0
+      dwell_end: 0
+      finished: 0           # slot just completed (triggers its termination)
+      # --- traffic layer ---
+      dest_x: 0.0
+      dest_y: 0.0
+      move_req: 0           # increment to move to (dest_x, dest_y)
+      req_id: 0             # id of my latest route request
+      req_open: false
+      req_mask: 0           # zones of the open request
+      req_round: 0
+      denied: false
+      waiting: false        # denied, will ask again
+      wait_round: 0
+      route: 0              # zones reserved while moving
+      held: 0               # zones I hold: route, plus my zone while dwelling
+      moving: false
+      nav_seen: false       # Nav2 reported `active` for my current goal
+      arrivals: 0           # incremented on each arrival at dest
+      wake: 0               # incremented by others when they release zones
+      q_from: 0             # last route request received: who, which, what
+      q_id: 0
+      q_mask: 0
+      # --- task slots (slot 1 shown; same for 2..K) ---
+      t1_active: false
+      t1_fx: 0.0
+      t1_fy: 0.0
+      t1_tx: 0.0
+      t1_ty: 0.0
+      t1_cost: 0.0
+      t1_bcost: 0.0
+      t1_bid: 0
+      t1_bround: 0
+      t1_lead: 0
+      t1_streak: 0
+
+  - id: robot2
+    type: nav2robot
+    ruleSets: [traffic, task, slot_1, slot_2, slot_3]
+    memory:
+      <<: *robot
+      agentId: 2
+      home_x: -5.5
+      home_y: -7.5
+
+  - id: robot3
+    type: nav2robot
+    ruleSets: [traffic, task, slot_1, slot_2, slot_3]
+    memory:
+      <<: *robot
+      agentId: 3
+      home_x: -5.5
+      home_y: -8.5
+
+  - id: dispatcher
+    type: basic
+    ruleSets: [dispatch]
+    memory:
+      agentId: 0
+      is_robot: false
+      # a new task is written here from outside (Input), then pending = true
+      new_fx: 0.0
+      new_fy: 0.0
+      new_tx: 0.0
+      new_ty: 0.0
+      pending: false
+      t1_active: false      # mirrors the robots' slots (cleared by Terminate)
+      t2_active: false
+      t3_active: false
+
+ruleSets:
+  # ===========================================================================
+  # Traffic: move(dest) with whole-route reservation.
+  #
+  #   move_req++ -> Request: broadcast my route (ZoneRoute from pose to dest)
+  #   every robot holding a zone of it, or asking for one with priority
+  #   (lower agentId), answers Deny
+  #   no deny for GRANT_WAIT rounds -> Grant: reserve route, send the goal
+  #   Nav2 succeeded -> Arrived: release route, arrivals++, wake the others
+  #   denied -> wait for a wake (someone released zones) or RETRY rounds
+  #
+  # Idle robots hold no zones (they are parked obstacles Nav2 drives around);
+  # otherwise three robots parked in W1 would deny each other forever.
+  # ===========================================================================
+  - id: traffic
+    rules:
+      - name: "Request"
+        event: "move_req"
+        tasks:
+          - condtype: 0
+            condition: "state != \"crashed\""
+            action: "req_mask = ZoneRoute(pose_x, pose_y, dest_x, dest_y), req_id = req_id + 1, req_open = true, req_round = round, denied = false, waiting = false"
+          - condtype: 1
+            condition: "state != \"crashed\" && ext.is_robot"
+            action: "ext.q_from = agentId, ext.q_id = req_id + 1, ext.q_mask = ZoneRoute(pose_x, pose_y, dest_x, dest_y)"
+
+      # Runs on the robot that received a request; ext = the requester.
+      - name: "Deny"
+        event: "q_id"
+        tasks:
+          - condtype: 1
+            condition: "ext.agentId == q_from && ext.req_id == q_id && ext.req_open && ((q_mask & held) != 0 || (req_open && (q_mask & req_mask) != 0 && agentId < q_from))"
+            action: "ext.denied = true"
+
+      - name: "Grant"
+        event: "round"
+        tasks:
+          - condtype: 0
+            condition: "req_open && !denied && state != \"crashed\" && round >= req_round + GRANT_WAIT"
+            action: "route = req_mask, req_open = false, moving = true, nav_seen = false, goal_x = dest_x, goal_y = dest_y, goal_yaw = 0.0, goal_seq = goal_seq + 1"
+
+      - name: "Denied"
+        event: "denied"
+        tasks:
+          - condtype: 0
+            condition: "denied && req_open"
+            action: "req_open = false, waiting = true, wait_round = round"
+
+      # Two rules because a rule cannot tell which of its events fired:
+      # someone released zones (wake changed), or RETRY rounds went by.
+      - name: "RetryOnWake"
+        event: "wake"
+        tasks:
+          - condtype: 0
+            condition: "waiting && state != \"crashed\""
+            action: "waiting = false, move_req = move_req + 1"
+
+      - name: "RetryTimeout"
+        event: "round"
+        tasks:
+          - condtype: 0
+            condition: "waiting && state != \"crashed\" && round >= wait_round + RETRY"
+            action: "waiting = false, move_req = move_req + 1"
+
+      # nav_status describes Nav2's latest goal, whoever sent it: only trust
+      # an outcome after seeing `active` for the goal I sent.
+      - name: "NavActive"
+        event: "nav_status"
+        tasks:
+          - condtype: 0
+            condition: "moving && nav_status == \"active\""
+            action: "nav_seen = true"
+
+      - name: "Arrived"
+        event: "nav_status"
+        tasks:
+          - condtype: 0
+            condition: "moving && nav_seen && nav_status == \"succeeded\""
+            action: "moving = false, route = 0, arrivals = arrivals + 1"
+          - condtype: 1
+            condition: "moving && nav_seen && nav_status == \"succeeded\" && ext.is_robot"
+            action: "ext.wake = ext.wake + 1"
+
+      - name: "NavFailed"
+        event: "nav_status"
+        tasks:
+          - condtype: 0
+            condition: "moving && nav_seen && (nav_status == \"failed\" || nav_status == \"canceled\")"
+            action: "moving = false, route = 0, move_req = move_req + 1"
+          - condtype: 1
+            condition: "moving && nav_seen && (nav_status == \"failed\" || nav_status == \"canceled\") && ext.is_robot"
+            action: "ext.wake = ext.wake + 1"
+
+      - name: "Held"
+        event: "route phase pose_x pose_y"
+        tasks:
+          - condtype: 0
+            condition: "phase == \"loading\" || phase == \"unloading\""
+            action: "held = route | ZoneOf(pose_x, pose_y)"
+          - condtype: 0
+            condition: "phase != \"loading\" && phase != \"unloading\""
+            action: "held = route"
+
+  # ===========================================================================
+  # Task: what the robot does with the task it was assigned (busy_task).
+  # Phase changes are driven by `arrivals` (traffic layer) and dwell timers.
+  # ===========================================================================
+  - id: task
+    rules:
+      - name: "ArrivedFrom"
+        event: "arrivals"
+        tasks:
+          - condtype: 0
+            condition: "state == \"busy\" && phase == \"to_from\""
+            action: "phase = \"loading\", dwell_end = round + DWELL"
+
+      - name: "Loaded"
+        event: "round"
+        tasks:
+          - condtype: 0
+            condition: "state == \"busy\" && phase == \"loading\" && round >= dwell_end"
+            action: "phase = \"to_to\", dest_x = cur_tx, dest_y = cur_ty, move_req = move_req + 1"
+
+      - name: "ArrivedTo"
+        event: "arrivals"
+        tasks:
+          - condtype: 0
+            condition: "state == \"busy\" && phase == \"to_to\""
+            action: "phase = \"unloading\", dwell_end = round + DWELL"
+
+      # Task complete: free the robot, terminate the slot (rule Terminate*),
+      # go home.
+      - name: "Unloaded"
+        event: "round"
+        tasks:
+          - condtype: 0
+            condition: "state == \"busy\" && phase == \"unloading\" && round >= dwell_end"
+            action: "finished = busy_task, state = \"idle\", busy_task = 0, phase = \"none\", dest_x = home_x, dest_y = home_y, move_req = move_req + 1"
+
+      # Crash (injected on /robotN/fault): stop, release everything. The
+      # robot keeps communicating with cost COST_INF, so the election hands
+      # its task to someone else. If it was carrying the crate, the new
+      # robot starts again from L_from (first version).
+      - name: "Crash"
+        event: "fault"
+        tasks:
+          - condtype: 0
+            condition: "fault && state != \"crashed\""
+            action: "state = \"crashed\", busy_task = 0, phase = \"none\", cancel_seq = cancel_seq + 1, moving = false, route = 0, req_open = false, waiting = false"
+          - condtype: 1
+            condition: "fault && state != \"crashed\" && ext.is_robot"
+            action: "ext.wake = ext.wake + 1"
+
+  # ===========================================================================
+  # Slot 1 (one per task slot): cost, election, take-over, yield, termination.
+  # Election as in the earlier draft: every round each live robot broadcasts
+  # its cost; receivers keep the round's minimum (ties -> lower agentId); the
+  # first bid of a new round closes the previous round into t1_lead.
+  # Cost (paper): omega * dist(pose, L_from) / charge, -inf once the crate is
+  # on board, +inf when busy elsewhere.
+  # ===========================================================================
+  - id: slot_1
+    rules:
+      - name: "Cost1"
+        event: "round pose_x pose_y state phase battery"
+        tasks:
+          - condtype: 0
+            condition: "t1_active && state == \"idle\""
+            action: "t1_cost = Sqrt((pose_x - t1_fx) * (pose_x - t1_fx) + (pose_y - t1_fy) * (pose_y - t1_fy)) / (0.05 + battery / 100.0)"
+          - condtype: 0
+            condition: "t1_active && state == \"busy\" && busy_task == 1 && (phase == \"to_from\" || phase == \"loading\")"
+            action: "t1_cost = HYST * Sqrt((pose_x - t1_fx) * (pose_x - t1_fx) + (pose_y - t1_fy) * (pose_y - t1_fy)) / (0.05 + battery / 100.0)"
+          - condtype: 0
+            condition: "t1_active && state == \"busy\" && busy_task == 1 && (phase == \"to_to\" || phase == \"unloading\")"
+            action: "t1_cost = COST_CARRY"
+          - condtype: 0
+            condition: "t1_active && (state == \"crashed\" || (state == \"busy\" && busy_task != 1))"
+            action: "t1_cost = COST_INF"
+
+      - name: "Elect1"
+        event: "round"
+        tasks:
+          - condtype: 0
+            condition: "t1_active && state != \"crashed\" && t1_bround < round"
+            action: "t1_lead = t1_bid, t1_bround = round, t1_bcost = t1_cost, t1_bid = agentId"
+          - condtype: 0
+            condition: "t1_active && state != \"crashed\" && t1_bround == round && (t1_cost < t1_bcost || (t1_cost == t1_bcost && agentId < t1_bid))"
+            action: "t1_bcost = t1_cost, t1_bid = agentId"
+          - condtype: 1
+            condition: "t1_active && state != \"crashed\" && ext.is_robot && ext.t1_active && ext.t1_bround < round"
+            action: "ext.t1_lead = ext.t1_bid, ext.t1_bround = round, ext.t1_bcost = t1_cost, ext.t1_bid = agentId"
+          - condtype: 1
+            condition: "t1_active && state != \"crashed\" && ext.is_robot && ext.t1_active && ext.t1_bround == round && (t1_cost < ext.t1_bcost || (t1_cost == ext.t1_bcost && agentId < ext.t1_bid))"
+            action: "ext.t1_bcost = t1_cost, ext.t1_bid = agentId"
+
+      - name: "Streak1"
+        event: "t1_bround"
+        tasks:
+          - condtype: 0
+            condition: "t1_lead == agentId"
+            action: "t1_streak = t1_streak + 1"
+          - condtype: 0
+            condition: "t1_lead != agentId"
+            action: "t1_streak = 0"
+
+      - name: "Take1"
+        event: "t1_streak"
+        tasks:
+          - condtype: 0
+            condition: "t1_active && state == \"idle\" && t1_streak >= THETA"
+            action: "state = \"busy\", busy_task = 1, phase = \"to_from\", cur_fx = t1_fx, cur_fy = t1_fy, cur_tx = t1_tx, cur_ty = t1_ty, dest_x = t1_fx, dest_y = t1_fy, move_req = move_req + 1"
+
+      # A better robot appeared before pick-up: give the task up, go home.
+      # (After pick-up the cost is COST_CARRY, so this cannot happen.)
+      - name: "Yield1"
+        event: "t1_lead"
+        tasks:
+          - condtype: 0
+            condition: "state == \"busy\" && busy_task == 1 && t1_lead != agentId && t1_lead != 0 && (phase == \"to_from\" || phase == \"loading\")"
+            action: "state = \"idle\", busy_task = 0, phase = \"none\", cancel_seq = cancel_seq + 1, moving = false, route = 0, req_open = false, waiting = false, dest_x = home_x, dest_y = home_y, move_req = move_req + 1"
+          - condtype: 1
+            condition: "state == \"busy\" && busy_task == 1 && t1_lead != agentId && t1_lead != 0 && (phase == \"to_from\" || phase == \"loading\") && ext.is_robot"
+            action: "ext.wake = ext.wake + 1"
+
+      # Termination of the task's process: deactivate slot 1 everywhere,
+      # dispatcher included (it then knows the slot is free).
+      - name: "Terminate1"
+        event: "finished"
+        tasks:
+          - condtype: 0
+            condition: "finished == 1"
+            action: "t1_active = false, finished = 0"
+          - condtype: 1
+            condition: "finished == 1 && ext.t1_active"
+            action: "ext.t1_active = false"
+
+  # ===========================================================================
+  # Dispatcher: a new task (new_fx..new_ty, pending = true, written from
+  # outside) goes into the first free slot and is announced to all robots.
+  # One task is buffered; if all slots are busy it waits for a Terminate.
+  # ===========================================================================
+  - id: dispatch
+    rules:
+      - name: "Dispatch1"
+        event: "pending t1_active"
+        tasks:
+          - condtype: 0
+            condition: "pending && !t1_active"
+            action: "t1_active = true, pending = false"
+          - condtype: 1
+            condition: "pending && !t1_active && ext.is_robot"
+            action: "ext.t1_active = true, ext.t1_fx = new_fx, ext.t1_fy = new_fy, ext.t1_tx = new_tx, ext.t1_ty = new_ty, ext.t1_bid = 0, ext.t1_bround = 0, ext.t1_lead = 0, ext.t1_streak = 0"
+
+      - name: "Dispatch2"
+        event: "pending t1_active t2_active"
+        tasks:
+          - condtype: 0
+            condition: "pending && t1_active && !t2_active"
+            action: "t2_active = true, pending = false"
+          - condtype: 1
+            condition: "pending && t1_active && !t2_active && ext.is_robot"
+            action: "ext.t2_active = true, ext.t2_fx = new_fx, ext.t2_fy = new_fy, ext.t2_tx = new_tx, ext.t2_ty = new_ty, ext.t2_bid = 0, ext.t2_bround = 0, ext.t2_lead = 0, ext.t2_streak = 0"
+
+      - name: "Dispatch3"
+        event: "pending t1_active t2_active t3_active"
+        tasks:
+          - condtype: 0
+            condition: "pending && t1_active && t2_active && !t3_active"
+            action: "t3_active = true, pending = false"
+          - condtype: 1
+            condition: "pending && t1_active && t2_active && !t3_active && ext.is_robot"
+            action: "ext.t3_active = true, ext.t3_fx = new_fx, ext.t3_fy = new_fy, ext.t3_tx = new_tx, ext.t3_ty = new_ty, ext.t3_bid = 0, ext.t3_bround = 0, ext.t3_lead = 0, ext.t3_streak = 0"

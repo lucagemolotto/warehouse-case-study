@@ -1,0 +1,4 @@
+robot1: 238 samples | xy mean 0.239 p95 1.032 max 2.365 m | yaw mean 8.9 max 86.7 deg | odom err max 19.486 m | H:ok(7s) P1:ok(46s) D1:ok(54s) P4:ok(64s) D4:ok(28s) H:ok(32s)
+robot2: 404 samples | xy mean 3.502 p95 11.342 max 14.314 m | yaw mean 50.3 max 179.8 deg | odom err max 23.984 m | H:ok(2s) P3:ok(79s) D2:ok(59s) P5:ABORTED(96s) D3:ABORTED(0s) H:ABORTED(158s)
+robot3: 279 samples | xy mean 0.981 p95 4.953 max 11.463 m | yaw mean 25.2 max 179.4 deg | odom err max 22.359 m | H:ok(24s) P5:ok(40s) D3:ok(41s) P2:ok(17s) D2:ABORTED(84s) H:ok(48s)
+ALL: xy mean 1.895 p95 7.198 max 14.314 m
