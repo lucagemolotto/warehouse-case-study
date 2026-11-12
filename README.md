@@ -1,0 +1,3 @@
+This repository contains the use case of a team of TurtleBot3 robots moving crates around a warehouse. A dispatcher node issues tasks at arbitrary times. 
+The robots elect who executes each task with the round-based leader-election algorithm of Audrito et al., "Coordinating a Robot Swarm in a Warehouse by Aggregate Programming" (ISoLA 2026, Alg. 1), re-expressed as Robo-AbU rules. 
+The goal is a like-for-like comparison with their approach and a study of the expressivity of Robo-AbU rules.
