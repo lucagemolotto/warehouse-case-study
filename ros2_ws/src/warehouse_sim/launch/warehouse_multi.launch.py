@@ -68,7 +68,9 @@ def launch_robots(context):
                     'use_robot_state_pub': 'True',
                     'x_pose': str(r['x']),
                     'y_pose': str(r['y']),
-                    'z_pose': '0.01',
+                    # The floor's surface is at z = 0.034 (GroundB box); spawning lower
+                    # embeds the wheels in it, and they slip.
+                    'z_pose': '0.05',
                     'roll': '0.0',
                     'pitch': '0.0',
                     'yaw': str(r['yaw']),
@@ -100,7 +102,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'world', default_value=os.path.join(share, 'worlds', 'warehouse.sdf')),
         DeclareLaunchArgument(
-            'map', default_value=os.path.join(share, 'maps', 'warehouse_sim.yaml')),
+            'map', default_value=os.path.join(share, 'maps', 'warehouse_nav.yaml')),
         DeclareLaunchArgument(
             'params_file',
             default_value=os.path.join(share, 'config', 'nav2_params.yaml')),

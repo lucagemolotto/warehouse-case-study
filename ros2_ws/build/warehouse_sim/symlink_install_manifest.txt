@@ -2,6 +2,8 @@
 /ws/install/warehouse_sim/share/warehouse_sim/worlds/warehouse.sdf
 /ws/install/warehouse_sim/share/warehouse_sim/maps/warehouse.png
 /ws/install/warehouse_sim/share/warehouse_sim/maps/warehouse.yaml
+/ws/install/warehouse_sim/share/warehouse_sim/maps/warehouse_nav.png
+/ws/install/warehouse_sim/share/warehouse_sim/maps/warehouse_nav.yaml
 /ws/install/warehouse_sim/share/warehouse_sim/maps/warehouse_sim.png
 /ws/install/warehouse_sim/share/warehouse_sim/maps/warehouse_sim.yaml
 /ws/install/warehouse_sim/share/warehouse_sim/models/LICENSE.aws
@@ -106,6 +108,7 @@
 /ws/install/warehouse_sim/share/warehouse_sim/config/nav2_params.yaml
 /ws/install/warehouse_sim/share/warehouse_sim/config/robots.yaml
 /ws/install/warehouse_sim/share/warehouse_sim/config/stations.yaml
+/ws/install/warehouse_sim/share/warehouse_sim/config/zones.yaml
 /ws/install/warehouse_sim/share/warehouse_sim/urdf/waffle.sdf.xacro
 /ws/install/warehouse_sim/lib/warehouse_sim/battery_sim.py
 /ws/install/warehouse_sim/share/ament_index/resource_index/package_run_dependencies/warehouse_sim

@@ -32,7 +32,7 @@ LIDAR_X = -0.064                           # base_scan offset from base_footprin
 
 
 def teleport(name, x, y, yaw=0.0):
-    req = (f'name: "{name}", position: {{x: {x}, y: {y}, z: 0.01}}, '
+    req = (f'name: "{name}", position: {{x: {x}, y: {y}, z: 0.05}}, '
            f'orientation: {{z: {math.sin(yaw / 2)}, w: {math.cos(yaw / 2)}}}')
     out = subprocess.run(
         ['gz', 'service', '-s', '/world/default/set_pose', '--reqtype', 'gz.msgs.Pose',

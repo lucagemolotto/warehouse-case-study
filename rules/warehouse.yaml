@@ -4,7 +4,8 @@
 # Format: the abusim/abumon scenario format, extended so that one rule holds
 # several tasks (`tasks:`; condtype 0 = `for`, local; 1 = `for all`, remote).
 # The rule grammar already allows this (prule: RULE name ON events task+);
-# the YAML loader does not yet (step 4).
+# the YAML loader does not yet (step 4). A `for all` task never reaches the
+# node that sent it.
 #
 # Nodes: robot1..3 (vehicles.Nav2Robot) and one dispatcher (basic node).
 # Built-in robot attributes (rosresources.Nav2RobotResources), not declared here:
@@ -36,8 +37,11 @@ nodes:
       # --- parameters ---
       THETA: 3              # rounds as best bidder before taking a task
       DWELL: 3              # rounds to load / unload a crate
-      GRANT_WAIT: 2         # rounds without a deny before a route is granted
-      RETRY: 10             # rounds before a denied robot asks again anyway
+      N_ROBOTS: 3           # a route is granted after N_ROBOTS-1 answers, all go
+      RETRY: 5              # rounds before a denied robot asks again anyway
+      K_AHEAD: 3            # window: the zone I am in + K_AHEAD-1 zones ahead
+      REROUTE: 4            # rounds stopped and refused before planning a detour
+      REQ_TIMEOUT: 3        # rounds a request may wait for its answers before it is resent
       HYST: 0.8             # cost factor for the robot already on the task (omega)
       COST_INF: 1.0e9       # crashed, or busy on another task
       COST_CARRY: -1.0e9    # carrying the task's crate: never pre-empted
@@ -57,19 +61,29 @@ nodes:
       move_req: 0           # increment to move to (dest_x, dest_y)
       req_id: 0             # id of my latest route request
       req_open: false
-      req_mask: 0           # zones of the open request
-      req_round: 0
-      denied: false
+      req_mask: 0           # zones of the open request (a window)
+      req_x: 0.0            # where the request was made (the window starts there)
+      req_round: 0          # round the request was made
+      req_y: 0.0
+      req_ts: 0             # its Lamport timestamp
+      lclock: 0             # Lamport clock of route requests
+      resp: 0               # answers received for the open request
+      denied: false         # one of them was no-go
       waiting: false        # denied, will ask again
       wait_round: 0
-      route: 0              # zones reserved while moving
+      route: 0              # zones reserved while moving: the current window
+      stopped: false        # at the window end, waiting for the next window
+      final: false          # dest is inside the window
+      avoid: 0              # zones the path must avoid (after a reroute)
+      block: 0              # zones held by the robots that said no-go
+      cur_zone: 0           # bit of the zone I am in (ZoneOf(pose))
       held: 0               # zones I hold: route, plus my zone while dwelling
       moving: false
-      nav_seen: false       # Nav2 reported `active` for my current goal
       arrivals: 0           # incremented on each arrival at dest
       wake: 0               # incremented by others when they release zones
-      q_from: 0             # last route request received: who, which, what
+      q_from: 0             # last route request received: who, which, when, what
       q_id: 0
+      q_ts: 0
       q_mask: 0
       # --- task slots (slot 1 shown; same for 2..K) ---
       t1_active: false
@@ -120,44 +134,83 @@ nodes:
 
 ruleSets:
   # ===========================================================================
-  # Traffic: move(dest) with whole-route reservation.
+  # Traffic: move(dest) with a moving window of reserved zones.
   #
-  #   move_req++ -> Request: broadcast my route (ZoneRoute from pose to dest)
-  #   every robot holding a zone of it, or asking for one with priority
-  #   (lower agentId), answers Deny
-  #   no deny for GRANT_WAIT rounds -> Grant: reserve route, send the goal
-  #   Nav2 succeeded -> Arrived: release route, arrivals++, wake the others
-  #   denied -> wait for a wake (someone released zones) or RETRY rounds
+  # A robot holds the zone it is in plus the next K_AHEAD-1 zones of its zone
+  # path to dest (the window), and drives to the end of the window: Nav2's
+  # goal is dest if dest is in the window, else just inside the window's exit
+  # door (builtins ZoneWindow, ZoneGoalX/Y). On entering a zone it releases
+  # the zones behind and asks for the next window; if that is granted before
+  # it reaches the window end it keeps driving, otherwise it stops there and
+  # waits, holding only the zone it is in.
   #
-  # Idle robots hold no zones (they are parked obstacles Nav2 drives around);
-  # otherwise three robots parked in W1 would deny each other forever.
+  #   move_req++ -> Request: broadcast the window (all-or-nothing)
+  #   every other robot answers go or no-go (Respond): no-go if the window
+  #   overlaps zones it holds, or its own open request when that request has
+  #   priority (Lamport timestamp, then lower agentId); a no-go carries the
+  #   zones the denier holds (block)
+  #   all N_ROBOTS-1 answers go -> Grant: hold the window, drive to its end
+  #   a no-go -> Denied: wait for a wake (someone released zones) or RETRY
+  #   rounds; a robot stopped at its window end for REROUTE rounds plans a
+  #   detour avoiding the zones that blocked it (avoid)
+  #
+  # Head-on: two robots stopped in adjacent zones, each needing the other's,
+  # never get a go; the reroute moves one of them round the other. A stopped
+  # robot holds only its own zone, so nothing else can be circular.
+  #
+  # Idle robots hold no zones (parked obstacles; three robots parked in W1
+  # would otherwise deny each other forever).
   # ===========================================================================
   - id: traffic
     rules:
+      # One request at a time: two triggers firing together (e.g. Extend and
+      # WindowEnd) would otherwise bump req_id twice while both broadcasts
+      # carry the first id, and every answer would be discarded. Lazy mode
+      # re-checks !req_open when the local half is applied, so the second
+      # firing is dropped; its broadcast is identical and draws no answers.
       - name: "Request"
         event: "move_req"
         tasks:
+          # A detour that cannot reach dest: forget it and ask again.
           - condtype: 0
-            condition: "state != \"crashed\""
-            action: "req_mask = ZoneRoute(pose_x, pose_y, dest_x, dest_y), req_id = req_id + 1, req_open = true, req_round = round, denied = false, waiting = false"
+            condition: "state != \"crashed\" && !req_open && ZoneWindow(pose_x, pose_y, dest_x, dest_y, K_AHEAD, avoid) == 0 && avoid != 0"
+            action: "avoid = 0, move_req = move_req + 1"
+          - condtype: 0
+            condition: "state != \"crashed\" && !req_open && ZoneWindow(pose_x, pose_y, dest_x, dest_y, K_AHEAD, avoid) != 0"
+            action: "req_mask = ZoneWindow(pose_x, pose_y, dest_x, dest_y, K_AHEAD, avoid), req_x = pose_x, req_y = pose_y, req_round = round, req_id = req_id + 1, req_ts = lclock + 1, lclock = lclock + 1, req_open = true, resp = 0, denied = false, waiting = false, block = 0"
           - condtype: 1
-            condition: "state != \"crashed\" && ext.is_robot"
-            action: "ext.q_from = agentId, ext.q_id = req_id + 1, ext.q_mask = ZoneRoute(pose_x, pose_y, dest_x, dest_y)"
+            condition: "state != \"crashed\" && !req_open && ZoneWindow(pose_x, pose_y, dest_x, dest_y, K_AHEAD, avoid) != 0 && ext.is_robot"
+            action: "ext.q_from = agentId, ext.q_id = req_id + 1, ext.q_ts = lclock + 1, ext.q_mask = ZoneWindow(pose_x, pose_y, dest_x, dest_y, K_AHEAD, avoid)"
 
-      # Runs on the robot that received a request; ext = the requester.
-      - name: "Deny"
-        event: "q_id"
+      # Lamport clock: a received request moves my clock past its timestamp.
+      - name: "Clock"
+        event: "q_ts"
+        tasks:
+          - condtype: 0
+            condition: "q_ts > lclock"
+            action: "lclock = q_ts"
+
+      # Runs on each robot that received a request; ext = the requester.
+      # Triggered by the whole (q_from, q_id, q_ts) triple: request ids are
+      # per sender, so two robots' requests can carry the same q_id.
+      - name: "Respond"
+        event: "q_from q_id q_ts"
         tasks:
           - condtype: 1
-            condition: "ext.agentId == q_from && ext.req_id == q_id && ext.req_open && ((q_mask & held) != 0 || (req_open && (q_mask & req_mask) != 0 && agentId < q_from))"
-            action: "ext.denied = true"
+            condition: "ext.agentId == q_from && ext.req_id == q_id && ext.req_open && ((q_mask & held) != 0 || (req_open && (q_mask & req_mask) != 0 && (req_ts < q_ts || (req_ts == q_ts && agentId < q_from))))"
+            action: "ext.denied = true, ext.resp = ext.resp + 1, ext.block = ext.block | held"
+          - condtype: 1
+            condition: "ext.agentId == q_from && ext.req_id == q_id && ext.req_open && (q_mask & held) == 0 && !(req_open && (q_mask & req_mask) != 0 && (req_ts < q_ts || (req_ts == q_ts && agentId < q_from)))"
+            action: "ext.resp = ext.resp + 1"
 
+      # All go: hold the window and drive to its end (computed from where the
+      # request was made, so the goal matches the zones granted).
       - name: "Grant"
-        event: "round"
+        event: "resp"
         tasks:
           - condtype: 0
-            condition: "req_open && !denied && state != \"crashed\" && round >= req_round + GRANT_WAIT"
-            action: "route = req_mask, req_open = false, moving = true, nav_seen = false, goal_x = dest_x, goal_y = dest_y, goal_yaw = 0.0, goal_seq = goal_seq + 1"
+            condition: "req_open && !denied && state != \"crashed\" && resp >= N_ROBOTS - 1"
+            action: "route = req_mask, req_open = false, moving = true, stopped = false, final = (req_mask & ZoneOf(dest_x, dest_y)) != 0, goal_x = ZoneGoalX(req_x, req_y, dest_x, dest_y, K_AHEAD, avoid), goal_y = ZoneGoalY(req_x, req_y, dest_x, dest_y, K_AHEAD, avoid), goal_yaw = 0.0, goal_seq = goal_seq + 1"
 
       - name: "Denied"
         event: "denied"
@@ -165,6 +218,15 @@ ruleSets:
           - condtype: 0
             condition: "denied && req_open"
             action: "req_open = false, waiting = true, wait_round = round"
+
+      # Safety net: a request still missing answers after REQ_TIMEOUT rounds
+      # (an answer lost, or quoting an outdated id) is withdrawn and resent.
+      - name: "RequestTimeout"
+        event: "round"
+        tasks:
+          - condtype: 0
+            condition: "req_open && state != \"crashed\" && round >= req_round + REQ_TIMEOUT"
+            action: "req_open = false, move_req = move_req + 1"
 
       # Two rules because a rule cannot tell which of its events fired:
       # someone released zones (wake changed), or RETRY rounds went by.
@@ -182,33 +244,50 @@ ruleSets:
             condition: "waiting && state != \"crashed\" && round >= wait_round + RETRY"
             action: "waiting = false, move_req = move_req + 1"
 
-      # nav_status describes Nav2's latest goal, whoever sent it: only trust
-      # an outcome after seeing `active` for the goal I sent.
-      - name: "NavActive"
-        event: "nav_status"
+      # Stopped at the window end and refused for REROUTE rounds: plan round
+      # the zones held by whoever said no-go (my own zone excepted).
+      - name: "Reroute"
+        event: "round"
         tasks:
           - condtype: 0
-            condition: "moving && nav_status == \"active\""
-            action: "nav_seen = true"
+            condition: "waiting && stopped && state != \"crashed\" && block != 0 && round >= wait_round + REROUTE && (block - (block & cur_zone)) != avoid"
+            action: "avoid = block - (block & cur_zone), waiting = false, move_req = move_req + 1"
 
+      # nav_done (from the robot) is the goal_seq of the latest goal that
+      # reached a final state; nav_done == goal_seq means it was my current
+      # goal, however briefly it was active.
+
+      # Reached dest: the move is over.
       - name: "Arrived"
-        event: "nav_status"
+        event: "nav_done nav_status"
         tasks:
           - condtype: 0
-            condition: "moving && nav_seen && nav_status == \"succeeded\""
-            action: "moving = false, route = 0, arrivals = arrivals + 1"
+            condition: "moving && nav_done == goal_seq && final && nav_status == \"succeeded\""
+            action: "moving = false, stopped = false, route = 0, avoid = 0, arrivals = arrivals + 1"
           - condtype: 1
-            condition: "moving && nav_seen && nav_status == \"succeeded\" && ext.is_robot"
+            condition: "moving && nav_done == goal_seq && final && nav_status == \"succeeded\" && ext.is_robot"
             action: "ext.wake = ext.wake + 1"
 
-      - name: "NavFailed"
-        event: "nav_status"
+      # Reached the end of the window before the next one was granted: wait
+      # there (asking for it if no request is pending).
+      - name: "WindowEnd"
+        event: "nav_done nav_status"
         tasks:
           - condtype: 0
-            condition: "moving && nav_seen && (nav_status == \"failed\" || nav_status == \"canceled\")"
-            action: "moving = false, route = 0, move_req = move_req + 1"
+            condition: "moving && nav_done == goal_seq && !final && nav_status == \"succeeded\""
+            action: "stopped = true"
+          - condtype: 0
+            condition: "moving && nav_done == goal_seq && !final && nav_status == \"succeeded\" && !req_open && !waiting"
+            action: "move_req = move_req + 1"
+
+      - name: "NavFailed"
+        event: "nav_done nav_status"
+        tasks:
+          - condtype: 0
+            condition: "moving && nav_done == goal_seq && (nav_status == \"failed\" || nav_status == \"canceled\")"
+            action: "moving = false, stopped = false, route = route & cur_zone, move_req = move_req + 1"
           - condtype: 1
-            condition: "moving && nav_seen && (nav_status == \"failed\" || nav_status == \"canceled\") && ext.is_robot"
+            condition: "moving && nav_done == goal_seq && (nav_status == \"failed\" || nav_status == \"canceled\") && ext.is_robot"
             action: "ext.wake = ext.wake + 1"
 
       - name: "Held"
@@ -220,6 +299,34 @@ ruleSets:
           - condtype: 0
             condition: "phase != \"loading\" && phase != \"unloading\""
             action: "held = route"
+
+      # The zone the robot is in, as an event.
+      - name: "Zone"
+        event: "pose_x pose_y"
+        tasks:
+          - condtype: 0
+            condition: "true"
+            action: "cur_zone = ZoneOf(pose_x, pose_y)"
+
+      # On entering a zone: release the zones behind (keep those still on the
+      # path to dest, and the one I am in) and wake the others.
+      - name: "ReleaseBehind"
+        event: "cur_zone"
+        tasks:
+          - condtype: 0
+            condition: "moving && ((route & ZoneWindow(pose_x, pose_y, dest_x, dest_y, 99, avoid)) | (route & cur_zone)) != route"
+            action: "route = (route & ZoneWindow(pose_x, pose_y, dest_x, dest_y, 99, avoid)) | (route & cur_zone)"
+          - condtype: 1
+            condition: "moving && ((route & ZoneWindow(pose_x, pose_y, dest_x, dest_y, 99, avoid)) | (route & cur_zone)) != route && ext.is_robot"
+            action: "ext.wake = ext.wake + 1"
+
+      # On entering a zone: ask for the next window if I do not hold it yet.
+      - name: "Extend"
+        event: "cur_zone"
+        tasks:
+          - condtype: 0
+            condition: "moving && !final && !req_open && !waiting && (ZoneWindow(pose_x, pose_y, dest_x, dest_y, K_AHEAD, avoid) & route) != ZoneWindow(pose_x, pose_y, dest_x, dest_y, K_AHEAD, avoid)"
+            action: "move_req = move_req + 1"
 
   # ===========================================================================
   # Task: what the robot does with the task it was assigned (busy_task).
@@ -266,7 +373,7 @@ ruleSets:
         tasks:
           - condtype: 0
             condition: "fault && state != \"crashed\""
-            action: "state = \"crashed\", busy_task = 0, phase = \"none\", cancel_seq = cancel_seq + 1, moving = false, route = 0, req_open = false, waiting = false"
+            action: "state = \"crashed\", busy_task = 0, phase = \"none\", cancel_seq = cancel_seq + 1, moving = false, stopped = false, route = 0, avoid = 0, req_open = false, waiting = false"
           - condtype: 1
             condition: "fault && state != \"crashed\" && ext.is_robot"
             action: "ext.wake = ext.wake + 1"
@@ -337,7 +444,7 @@ ruleSets:
         tasks:
           - condtype: 0
             condition: "state == \"busy\" && busy_task == 1 && t1_lead != agentId && t1_lead != 0 && (phase == \"to_from\" || phase == \"loading\")"
-            action: "state = \"idle\", busy_task = 0, phase = \"none\", cancel_seq = cancel_seq + 1, moving = false, route = 0, req_open = false, waiting = false, dest_x = home_x, dest_y = home_y, move_req = move_req + 1"
+            action: "state = \"idle\", busy_task = 0, phase = \"none\", cancel_seq = cancel_seq + 1, moving = false, stopped = false, route = 0, avoid = 0, req_open = false, waiting = false, dest_x = home_x, dest_y = home_y, move_req = move_req + 1"
           - condtype: 1
             condition: "state == \"busy\" && busy_task == 1 && t1_lead != agentId && t1_lead != 0 && (phase == \"to_from\" || phase == \"loading\") && ext.is_robot"
             action: "ext.wake = ext.wake + 1"

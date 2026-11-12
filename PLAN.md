@@ -228,6 +228,51 @@ Each step ends with a check that must pass before the next one starts.
      - Not an issue: Humble's broken graph view of Jazzy nodes (the agents
        only need graph information about each other, all Humble), and the
        battery percentage scale.
+   - **Navigation fixes (2026-11-09)**, after a robot got stuck in the first
+     AbU run:
+     - **Obstacles the lidar can't see.** Several AWS models have collision
+       geometry that differs from their visuals, and the simulated lidar sees
+       only visuals. The worst case: the west-wall shelf (ShelfF) has solid
+       side panels (2.1 m deep, 1.64 m tall) where the lidar sees only two
+       legs, so the west strip is closed bays, not open floor. Also a solid
+       spine in the middle of the shelf block (x ≈ 4.3–5.2) and larger
+       outlines for the clutter.
+       - `tools/collision_vs_map.py` slices every model's collision geometry
+         at robot heights and lists what the lidar map lacks.
+       - With `--write`, it writes `maps/warehouse_nav` = lidar map + those
+         outlines. Nav2, `zones_edges.py` and the eval's clearance metric use
+         it; `maps/warehouse_sim` stays the lidar-only map.
+     - **Spawn height.** Robots spawned at z = 0.01, inside the floor box
+       (surface 0.034), so their wheels were embedded and slipped (a 360°
+       turn lost ~20°). Now z = 0.05. `map_from_sim.py` was changed the same
+       way.
+     - **Nav2 parameters** (`config/nav2_params.yaml`):
+       - local costmap: the real Waffle footprint polygon (the stock circle
+         r = 0.22 missed the rear corners), inflation 0.6;
+       - global costmap: robot_radius 0.26, inflation 0.8;
+       - DWB BaseObstacle.scale 0.02 → 0.05;
+       - collision monitor footprint topic made relative (the stock
+         multi-robot value was absolute, so the monitor never had a
+         footprint).
+     - **Result:** robot1's west-strip route alone, 4/4 legs ok, closest
+       approach to an obstacle 0.74 m (was 0.21 m and stuck), AMCL error
+       max 0.19 m. With three robots and no traffic control, the remaining
+       failure is robots meeting head-on, which is the AbU traffic layer's
+       job.
+     - **Speed and controller (2026-11-09).** Max speed 0.26 → 0.45 m/s and
+       turning 1.0 → 1.5 rad/s. The simulated drive allows 0.46 m/s and
+       1.9 rad/s; a real TB3 Waffle is limited to 0.26 m/s. Acceleration
+       limits in Nav2 now match the drive (1 m/s², 2 rad/s²). At 0.45 m/s,
+       DWB wedged a robot on a shelf post at an aisle mouth (about 0.9 m
+       wide), so the controller is now Regulated Pure Pursuit:
+       - 0.45 m/s in the open;
+       - slows near obstacles (cost-regulated) and in tight turns, down to
+         0.15 m/s;
+       - stops when a collision is less than 1 s ahead.
+
+       Result: the three-task AbU scenario ran 3 rounds in a row, all tasks
+       done in 190 / 186 / 153 s, with no Nav2 progress failures or aborted
+       goals.
 3. **AbU-ROS (`warehouse` branch)**
    - A `Nav2Robot` vehicle and resource using the interface above directly
      (rclgo, Humble bindings). Written fresh; the `turtlebot` branch is only a

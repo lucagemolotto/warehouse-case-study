@@ -19,12 +19,20 @@ ZONES = SHARE + 'config/zones.yaml'
 MIN_GAP = 0.7    # metres of free boundary for a passage (TB3 Waffle ~0.31 m wide)
 PROBE = 0.15     # how far each side of the boundary must be free
 
-m = yaml.safe_load(open(SHARE + 'maps/warehouse_sim.yaml'))
+m = yaml.safe_load(open(SHARE + 'maps/warehouse_nav.yaml'))
 img = np.array(Image.open(SHARE + 'maps/' + m['image']).convert('L'))
 H, W = img.shape
 res = m['resolution']
 ox, oy = m['origin'][:2]
 free = img > 250
+PULL = 0.4       # = zones.PullBack in AbU-ROS: goals sit this far back from a door
+from scipy.ndimage import distance_transform_edt
+clear = distance_transform_edt(img >= 100) * res   # distance to the nearest obstacle
+
+
+def clearance(x, y):
+    c, r = int((x - ox) / res), H - 1 - int((y - oy) / res)
+    return float(clear[r, c]) if 0 <= c < W and 0 <= r < H else 0.0
 
 
 def is_free(x, y):
@@ -33,15 +41,25 @@ def is_free(x, y):
 
 
 def longest_free_run(points, normal):
-    best = run = 0.0
+    """Length of the longest free stretch along the boundary, and the door
+    robots use to cross: the point of that stretch with the most clearance,
+    counting the door itself and the goals PULL metres back on either side."""
+    best, best_run, run, start = 0.0, (0, -1), 0.0, 0
     nx, ny = normal
-    for x, y in points:
+    for i, (x, y) in enumerate(points):
         if all(is_free(x + s * nx * PROBE, y + s * ny * PROBE) for s in (-1, 0, 1)):
+            if run == 0.0:
+                start = i
             run += res
-            best = max(best, run)
+            if run > best:
+                best, best_run = run, (start, i)
         else:
             run = 0.0
-    return best
+    if best_run[1] < 0:
+        return 0.0, None
+    door = max(points[best_run[0]:best_run[1] + 1],
+               key=lambda p: min(clearance(p[0] + s * nx * PULL, p[1] + s * ny * PULL) for s in (-1, 0, 1)))
+    return best, door
 
 
 def shared_boundary(a, b):
@@ -70,11 +88,12 @@ def main():
             pts, normal = shared_boundary(a['rect'], b['rect'])
             if pts is None:
                 continue
-            gap = longest_free_run(pts, normal)
+            gap, door = longest_free_run(pts, normal)
             ok = gap >= MIN_GAP
-            print(f"{a['name']}-{b['name']}: longest free passage {gap:4.2f} m {'' if ok else '-> NOT connected'}")
+            print(f"{a['name']}-{b['name']}: longest free passage {gap:4.2f} m"
+                  + (f", door at ({door[0]:.2f}, {door[1]:.2f})" if ok else ' -> NOT connected'))
             if ok:
-                edges.append([a['name'], b['name']])
+                edges.append([a['name'], b['name'], round(float(door[0]), 2), round(float(door[1]), 2)])
 
     def zone_of(x, y):
         for z in zones:
@@ -95,7 +114,7 @@ def main():
     text = open(ZONES).read()
     head = text[:text.index('\nedges:')]
     with open(ZONES, 'w') as f:
-        f.write(head + '\nedges:\n' + ''.join(f'  - [{a}, {b}]\n' for a, b in edges))
+        f.write(head + '\nedges:\n' + ''.join(f'  - [{a}, {b}, {x}, {y}]\n' for a, b, x, y in edges))
     print(f'{len(edges)} edges written to {ZONES}')
 
 

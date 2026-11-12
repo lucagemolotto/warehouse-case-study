@@ -1,0 +1,52 @@
+# Traffic-control zones in the map frame (see PLAN.md, "Traffic control").
+# A set of zones is an Integer bitmask: zone k is bit k, in the order below
+# (at most 63 zones). rect is [x_min, y_min, x_max, y_max] in metres.
+#
+# W*: west strip along the left wall (home, D1, D2).
+# C*: central hall (D3, D4).
+# A*: shelf block, one band per pick station. Robots fit under the shelves
+#     (only the legs block them), so neighbouring bands connect through the
+#     shelf rows, not only at the aisle ends.
+#
+# `edges` is written by tools/zones_edges.py from the map: two zones are
+# connected when they share a boundary with at least 0.7 m of free passage.
+zones:
+  - {name: W1, rect: [-6.9, -10.1, -3.6, -5.5]}
+  - {name: W2, rect: [-6.9, -5.5, -3.6, -0.5]}
+  - {name: W3, rect: [-6.9, -0.5, -3.6, 4.5]}
+  - {name: W4, rect: [-6.9, 4.5, -3.6, 10.4]}
+  - {name: C1, rect: [-3.6, -10.1, 2.4, -5.5]}
+  - {name: C2, rect: [-3.6, -5.5, 2.4, -0.5]}
+  - {name: C3, rect: [-3.6, -0.5, 2.4, 3.5]}
+  - {name: C4, rect: [-3.6, 3.5, 2.4, 7.5]}
+  - {name: C5, rect: [-3.6, 7.5, 2.4, 10.4]}
+  - {name: A1, rect: [2.4, -1.24, 6.9, 2.9]}
+  - {name: A2, rect: [2.4, -3.04, 6.9, -1.24]}
+  - {name: A3, rect: [2.4, -4.83, 6.9, -3.04]}
+  - {name: A4, rect: [2.4, -6.75, 6.9, -4.83]}
+  - {name: A5, rect: [2.4, -10.1, 6.9, -6.75]}
+edges:
+  - [W1, W2, -3.65, -5.5]
+  - [W1, C1, -3.6, -8.95]
+  - [W2, W3, -3.65, -0.5]
+  - [W2, C2, -3.6, -3.2]
+  - [W3, W4, -3.65, 4.5]
+  - [W3, C3, -3.6, 0.15]
+  - [W3, C4, -3.6, 4.15]
+  - [W4, C4, -3.6, 7.05]
+  - [W4, C5, -3.6, 9.4]
+  - [C1, C2, 0.8, -5.5]
+  - [C1, A4, 2.4, -5.75]
+  - [C1, A5, 2.4, -9.7]
+  - [C2, C3, 0.8, -0.5]
+  - [C2, A1, 2.4, -1.19]
+  - [C2, A2, 2.4, -2.14]
+  - [C2, A3, 2.4, -3.88]
+  - [C2, A4, 2.4, -4.85]
+  - [C3, C4, 0.85, 3.5]
+  - [C3, A1, 2.4, 2.0]
+  - [C4, C5, 1.65, 7.5]
+  - [A1, A2, 3.55, -1.24]
+  - [A2, A3, 3.55, -3.04]
+  - [A3, A4, 3.55, -4.83]
+  - [A4, A5, 3.55, -6.75]
